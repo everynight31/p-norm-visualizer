@@ -242,4 +242,249 @@ window.addEventListener('resize', render);
 render();
 </script>
 </body>
+</html>
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>p 范数单位球面可视化 — ||x||_p = 1</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden;height:100vh}
+#controls{position:fixed;top:16px;left:16px;z-index:10;background:rgba(22,27,34,.92);backdrop-filter:blur(10px);border:1px solid #30363d;border-radius:12px;padding:18px 22px;width:310px;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+#controls h2{font-size:15px;color:#58a6ff;margin-bottom:12px;display:flex;align-items:center;gap:6px}
+#controls h2::before{content:'';display:inline-block;width:8px;height:8px;background:#58a6ff;border-radius:50%}
+.control-group{margin-bottom:14px}
+.control-group label{display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px;color:#8b949e}
+.control-group label span{color:#58a6ff;font-weight:600;font-family:'Consolas','Courier New',monospace}
+input[type=range]{width:100%;-webkit-appearance:none;height:6px;border-radius:3px;background:#21262d;outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:#58a6ff;cursor:pointer;box-shadow:0 0 8px rgba(88,166,255,.4)}
+input[type=range]::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:#58a6ff;cursor:pointer;border:none}
+.info-box{background:rgba(88,166,255,.08);border:1px solid rgba(88,166,255,.2);border-radius:8px;padding:10px 12px;margin-top:4px;font-size:12.5px;line-height:1.6;color:#c9d1d9}
+.info-box .p-shape{color:#58a6ff;font-weight:700}
+#canvas{display:block;width:100vw;height:100vh}
+.formula{font-family:'Consolas','Courier New',monospace;font-size:12.5px;color:#8b949e;padding:8px 0;border-top:1px solid #30363d;margin-top:12px}
+.formula .expr{color:#7ee787}
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+
+<div id="controls">
+  <h2>p 范数单位球面</h2>
+
+  <div class="control-group">
+    <label>p 值 <span id="pVal">2.0</span></label>
+    <input type="range" id="pSlider" min="0" max="100" step="0.1" value="35">
+  </div>
+
+  <div class="control-group">
+    <label>网格精度 <span id="gridVal">40</span></label>
+    <input type="range" id="gridSlider" min="10" max="80" step="2" value="40">
+  </div>
+
+  <div class="info-box">
+    <p>当 p=1：正八面体（Manhattan 距离）</p>
+    <p>当 p=2：标准球面（欧几里得）</p>
+    <p>当 p→∞：立方体表面</p>
+    <p>当 p&lt;1：星形凹面体</p>
+  </div>
+
+  <div class="formula">
+    <div class="expr">||x||_p = (|x1|^p + |x2|^p + |x3|^p)^(1/p)</div>
+  </div>
+</div>
+
+<script>
+// ========== 参数 ==========
+let p = 2.0, grid = 40;
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+// 相机参数
+let camDist = 5.5, camRotX = 0.55, camRotY = 0.72;
+let isDragging = false, lastMX = 0, lastMY = 0;
+
+// 坐标变换矩阵
+function project(x, y, z) {
+  let cx = Math.cos(camRotY), sx = Math.sin(camRotY);
+  let cy = Math.cos(camRotX), sy = Math.sin(camRotX);
+
+  let x1 = x * cx - z * sx;
+  let z1 = x * sx + z * cx;
+
+  let y2 = y * cy - z1 * sy;
+  let z2 = y * sy + z1 * cy;
+
+  let fov = camDist;
+  let scale = fov / (fov + z2);
+
+  return {
+    x: x1 * scale * 280 + canvas.width / 2,
+    y: -y2 * scale * 280 + canvas.height / 2,
+    depth: z2,
+    scale: scale
+  };
+}
+
+function toColor(p) {
+  let t = Math.min(p / 20, 1);
+  let r, g, b;
+  if (t < 0.33) {
+    let s = t / 0.33;
+    r = 50 + s * 200;
+    g = 166 - s * 80;
+    b = 255 - s * 200;
+  } else {
+    let s = (t - 0.33) / 0.67;
+    r = 250 + s * 5;
+    g = 86 - s * 60;
+    b = 55 - s * 40;
+  }
+  return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
+}
+
+function drawGridLine(x1, y1, z1, x2, y2, z2, p) {
+  let a = project(x1, y1, z1);
+  let b = project(x2, y2, z2);
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.strokeStyle = toColor(p);
+  ctx.globalAlpha = 0.5;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+function render() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  let n = grid;
+  let uSteps = n, vSteps = Math.ceil(n * 0.6);
+
+  // 沿 u 方向
+  for (let vi = 0; vi <= vSteps; vi++) {
+    let v = Math.PI * vi / vSteps;
+    for (let ui = 0; ui <= uSteps; ui++) {
+      let u = 2 * Math.PI * ui / uSteps;
+      let u2 = 2 * Math.PI * (ui + 1) / uSteps;
+
+      let x1 = Math.sin(v) * Math.cos(u);
+      let y1 = Math.sin(v) * Math.sin(u);
+      let z1 = Math.cos(v);
+
+      let x2 = Math.sin(v) * Math.cos(u2);
+      let y2 = Math.sin(v) * Math.sin(u2);
+      let z2 = Math.cos(v);
+
+      let r1 = (Math.pow(Math.abs(x1), p) + Math.pow(Math.abs(y1), p) + Math.pow(Math.abs(z1), p)) ** (1 / p);
+      let r2 = (Math.pow(Math.abs(x2), p) + Math.pow(Math.abs(y2), p) + Math.pow(Math.abs(z2), p)) ** (1 / p);
+
+      if (r1 === 0) r1 = 1e-10;
+      if (r2 === 0) r2 = 1e-10;
+
+      drawGridLine(x1 / r1, y1 / r1, z1 / r1, x2 / r2, y2 / r2, z2 / r2, p);
+    }
+  }
+
+  // 沿 v 方向
+  for (let ui = 0; ui <= uSteps; ui++) {
+    let u = 2 * Math.PI * ui / uSteps;
+    for (let vi = 0; vi < vSteps; vi++) {
+      let v1 = Math.PI * vi / vSteps;
+      let v2 = Math.PI * (vi + 1) / vSteps;
+
+      let x1 = Math.sin(v1) * Math.cos(u);
+      let y1 = Math.sin(v1) * Math.sin(u);
+      let z1 = Math.cos(v1);
+
+      let x2 = Math.sin(v2) * Math.cos(u);
+      let y2 = Math.sin(v2) * Math.sin(u);
+      let z2 = Math.cos(v2);
+
+      let r1 = (Math.pow(Math.abs(x1), p) + Math.pow(Math.abs(y1), p) + Math.pow(Math.abs(z1), p)) ** (1 / p);
+      let r2 = (Math.pow(Math.abs(x2), p) + Math.pow(Math.abs(y2), p) + Math.pow(Math.abs(z2), p)) ** (1 / p);
+
+      if (r1 === 0) r1 = 1e-10;
+      if (r2 === 0) r2 = 1e-10;
+
+      drawGridLine(x1 / r1, y1 / r1, z1 / r1, x2 / r2, y2 / r2, z2 / r2, p);
+    }
+  }
+
+  // 坐标轴
+  ctx.globalAlpha = 0.4;
+  ctx.lineWidth = 1.5;
+
+  let xo = project(1.2, 0, 0), xi = project(-1.2, 0, 0);
+  ctx.strokeStyle = '#f97583';
+  ctx.beginPath(); ctx.moveTo(xi.x, xi.y); ctx.lineTo(xo.x, xo.y); ctx.stroke();
+
+  let yo = project(0, 1.2, 0), yi = project(0, -1.2, 0);
+  ctx.strokeStyle = '#7ee787';
+  ctx.beginPath(); ctx.moveTo(yi.x, yi.y); ctx.lineTo(yo.x, yo.y); ctx.stroke();
+
+  let zo = project(0, 0, 1.2), zi = project(0, 0, -1.2);
+  ctx.strokeStyle = '#58a6ff';
+  ctx.beginPath(); ctx.moveTo(zi.x, zi.y); ctx.lineTo(zo.x, zo.y); ctx.stroke();
+
+  ctx.globalAlpha = 1;
+
+  ctx.font = 'bold 13px "Segoe UI"';
+  ctx.fillStyle = '#f97583'; ctx.fillText('X', xo.x + 6, xo.y - 4);
+  ctx.fillStyle = '#7ee787'; ctx.fillText('Y', yo.x + 6, yo.y - 4);
+  ctx.fillStyle = '#58a6ff'; ctx.fillText('Z', zo.x + 6, zo.y - 4);
+}
+
+// 事件
+canvas.addEventListener('mousedown', e => {
+  isDragging = true;
+  lastMX = e.clientX;
+  lastMY = e.clientY;
+});
+canvas.addEventListener('mousemove', e => {
+  if (!isDragging) return;
+  let dx = e.clientX - lastMX;
+  let dy = e.clientY - lastMY;
+  camRotY += dx * 0.006;
+  camRotX += dy * 0.006;
+  camRotX = Math.max(-Math.PI / 2.2, Math.min(Math.PI / 2.2, camRotX));
+  lastMX = e.clientX;
+  lastMY = e.clientY;
+  render();
+});
+canvas.addEventListener('mouseup', () => isDragging = false);
+canvas.addEventListener('mouseleave', () => isDragging = false);
+canvas.addEventListener('wheel', e => {
+  camDist += e.deltaY * 0.003;
+  camDist = Math.max(3, Math.min(10, camDist));
+  render();
+});
+
+// 控件
+const pSlider = document.getElementById('pSlider');
+const pVal = document.getElementById('pVal');
+const gridSlider = document.getElementById('gridSlider');
+const gridVal = document.getElementById('gridVal');
+
+pSlider.addEventListener('input', () => {
+  let f = parseFloat(pSlider.value) / 100;
+  p = 0.5 * Math.exp(f * Math.log(40));
+  pVal.textContent = p.toFixed(1);
+  render();
+});
+gridSlider.addEventListener('input', () => {
+  grid = parseInt(gridSlider.value);
+  gridVal.textContent = grid;
+  render();
+});
+
+window.addEventListener('resize', render);
+render();
+</script>
+</body>
   </html>
